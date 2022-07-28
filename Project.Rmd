@@ -1,0 +1,2110 @@
+---
+title: "SDS2 - Final Project"
+author: "Francesco Pinto"
+date: "Accademic Year 2021/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tinytex)
+library(dplyr)
+library(factoextra)
+library(highcharter)
+library(ggplot2)
+library(R2jags)
+library(ggmcmc)
+library(bayesplot)
+library(forecast)
+library(coda)
+library(LaplacesDemon)
+library(MLmetrics)
+library(pROC)
+library(coda)
+#library(kableExtra)
+#library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = F}
+setwd("/Users/francescopinto/Desktop/DATA_SCIENCE/ARCHIVIATE/STATISTICAL METHODS FOR DS/SDS2/Project")
+data = read.csv('neo.csv')
+names(data) = c('ID', 'Name', 'MinDiameter', 'MaxDiameter', 'RelativeVelocity', 'MissDistance', 'OrbitingBody', 'SentryObject', 'AbsoluteMagnitude', 'Hazardous')
+```
+Bayesian Analysis of the risk of collision of asteroids with the Earth
+---
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"nasalogo.svg.png\" style=\"float: right;width: 150px;\"/>')
+   });
+</script>
+---
+
+
+```{r, echo = F}
+thm <- hc_theme(
+  colors = c("dodgerblue", "firebrick", "darkblue"),
+  chart = list(
+    backgroundColor = "white"
+  ),
+  title = list(
+    style = list(
+      color = "#333333",
+      fontFamily = "Helvetica"
+    )
+  ),
+  subtitle = list(
+    style = list(
+      color = "#666666",
+      fontFamily = "Helvetica"
+    )
+  ),
+  legend = list(
+    itemStyle = list(
+      fontFamily = "Tangerine",
+      color = "black"
+    ),
+    itemHoverStyle = list(
+      color = "gray"
+    )
+  )
+)
+```
+
+
+There is an infinite number of objects in the outer space. Some of them are closer than we think. Even though we might think that a distance of 70,000 Km can not potentially harm us, but at an astronomical scale, this is a very small distance and can disrupt many natural phenomena.
+
+These objects/asteroids can thus prove to be harmful. Hence, it is wise to know what is surrounding us and what can harm us amongst those.
+
+**The objective** of the analysis is to discover whether an asteroid is potentially dangerous for the earth or not. \
+In order to do that, we have different Machine Learning algorithms at our disposal to do *binary classification*.
+
+**The dataset** analyzed for this analysis is taken from Kaggle and contains more than 90'000 features regarding 27'000 objects in the space. \
+
+Three **statistical models for classification** are applied: \
+-Probit Regression \
+-Logistic Regression (with Logit link function) \
+-Complementary log-log regression (cloglog)
+
+The parameters of the models are tuned with Monte Carlo Markov Chain methods, and a fully bayesian in-depth analysis is applied to them.
+
+The analysis is divided in **4 parts:** \
+
+1. Exploratory Data Analysis and Feature Engineering 
+2. Application of three different statistical models for binomial classification: Probit Regression, Logistic Regression (Logit) and Complementary log-log Regression. Over these three models, we are gonna observe:
+  + Parameter tuning with Monte Carlo Markov Chain
+  + Visualization of the MCMC with Traceplots, Empirical Average, Density plots, Autocorrelation plots, Correlation matrix of the parameters
+  + Model testing on new data
+  + Comparison between Bayesian approach and Frequentist approach for every model
+  + Testing
+3. Choice of the best model among the six analyzed 
+4. Conclusions
+
+Now, let's move on.
+
+## Exploratory Data Analysis and Feature Engineering
+
+```{r, echo = F}
+data_init = data
+data_init$MinDiameter = round(data_init$MinDiameter , 3)
+data_init$MaxDiameter = round(data_init$MaxDiameter , 3)
+
+kable(data_init[1:5,])
+
+```
+
+The dataset is composed by 10 variables:
+
+-**ID**: ID number of every asteroid \
+-**Name**: the name of the asteroids \
+-**MinDiameter**: the minimum diameter estimated of the asteroids (in km) \
+-**MaxDiameter**: the maximum diameter estimated of the asteroids (in km) \
+-**RelativeVelocity** : the velocity relative to the Earth (in km/h) \
+-**MissDistance**: the distance between the Earth and the asteroid (in km) \
+-**OrbitingBody**: the planet that the asteroid orbits \
+-**SentryObject**: (binary variable) explains if an asteroid is included in an automated collision monitoring system \
+-**AbsoluteMagnitude**: intrinsic luminosity of the asteroid. The more negative is the magnitude, the brighter is the asteroid (in vmag) \
+-**Hazardous**: Boolean feature that shows whether asteroid is harmful or not. It is be the output variable and the analysis will be based on the prediction of it.
+
+
+### Data cleaning 
+
+Of course, before analyzing the data, I need to clean them in order to remove useless information.
+
+**-1.** ID and Name are useless information, so I will remove them. Also OrbitingBody and SentryObject have the same value for every row. I can remove them.\
+**-2.** OrbitingBody, False and the output Hazardous are binary variables (True/False), so I'm gonna transform them into $0$ and $1$. \
+
+After observing that OrbitingBody is composed $100\%$ by 'Earth' and that SentryObject is only False, I've dropped these columns
+
+
+```{r, echo = F}
+#1. removing the useless columns
+data = data[-c(1,2,7,8)]
+
+#2. Changing binary variables
+for(i in 1:nrow(data)){
+  #Hazardous
+  if(data$Hazardous[i] == 'True')
+    data$Hazardous[i] = 1
+  else
+    data$Hazardous[i] = 0
+}
+
+```
+
+
+
+
+
+
+### Data Visualization and Exploration
+
+One of the most important steps, after understanding the features meaning and a first data cleaning, is the **Data Visualization.** \
+The first data I want to observe is the distribution of Riskful and Non-Riskful asteroids over the labels
+
+```{r, echo = F}
+rnr = data.frame((table(data$Hazardous)/length(data$Hazardous))*100)
+rnr[1] = as.factor(c('No Riskful', 'Riskful'))
+rnr[2] = round(rnr[2], 2)
+rnr[3] = c('gray', 'darkred') 
+
+
+hchart(rnr, type = "pie", hcaes(x = paste(Var1,':', Freq, '%'), y = Freq)) %>%
+  hc_chart(options3d = list(enabled = TRUE, beta = 0, alpha = 60)) %>%
+  hc_xAxis(categories = rnr$Var1) %>%
+  hc_plotOptions(pie = list(depth = 70))%>% 
+  hc_add_theme(thm)%>%
+  hc_title(text = "Riskful vs Non-Riskful asteroids")%>% 
+  hc_subtitle(
+    text = "In percentage", 
+    style = list(fontWeight = "bold"),
+    align = "center"
+    )
+
+```
+
+We can observe that only approximately one asteroids over ten is potentially hazardous. \
+So now we can pass to the observation of these asteroids. \
+The Visualization's first purpose is to compare the features of the dangerous objects with the non dangerous.
+
+```{r, echo = F}
+hchart(density(unlist((data$RelativeVelocity[data$Hazardous == 0]))), type = "areaspline", color = 'dodgerblue', name = "No Riskful") %>%
+      hc_add_series( density(unlist((data$RelativeVelocity[data$Hazardous == 1]))), type = "area", color = 'darkred', name = "Riskful")%>% 
+  hc_title(text = "Compared Velocities of the asteroids (km/h)")
+
+```
+
+As shown in the plot above, the risky asteroids are more likely to be "fast". In fact, the faster is an asteroid, the higher is the potentially risk of it.
+
+
+
+```{r, echo = F}
+data$Hazardous = as.numeric(data$Hazardous)
+hchart(density(unlist((data$MaxDiameter[data$Hazardous == 0]))), type = "areaspline", color = 'dodgerblue', name = "No Riskful") %>%
+      hc_add_series( density(unlist((data$MaxDiameter[data$Hazardous == 1]))), type = "area", color = 'darkred', name = "Riskful")%>% 
+  hc_title(text = "Maximum Diameters of the asteroids (km)")%>%
+  hc_xAxis(max = 1)
+```
+
+Looking at the maximum diameter of the asteroids we can notice that the risky ones tend to have an higher diameter, and it causes higher danger. The curves have been approximated with spline method. 
+
+
+
+
+```{r, echo = F}
+
+hchart(density(unlist((data$AbsoluteMagnitude[data$Hazardous == 0]))), type = "areaspline", color = 'dodgerblue', name = "No Riskful") %>%
+      hc_add_series( density(unlist((data$AbsoluteMagnitude[data$Hazardous == 1]))), type = "area", color = 'darkred', name = "Riskful")%>% 
+  hc_title(text = "Magnitude of the asteroids")%>%
+  hc_xAxis(min = 12)
+```
+
+
+Of course the magnitude seems to be a very significant variable for the analysis! the riskful asteroids have a definitely smaller magnitude. \
+It means that they bright more than the not risky ones, and this brightness causes peril.
+
+
+```{r, echo = F, warning = F}
+for(i in 1:nrow(data_init)){
+  #Hazardous
+  if(data_init$Hazardous[i] == 'True')
+    data_init$Hazardous[i] = 'Not Riskful'
+  else
+    data_init$Hazardous[i] = 'Riskful'
+}
+hcboxplot(x = data_init$MissDistance, var = data_init$Hazardous, outliers = F) %>%
+  hc_chart(type = "column")
+```
+
+
+Looking at the boxplot of the distances of the objects, we can notice that the maximum distance is the same for both riskful and not: it's because we are selecting the asteroids that fluctuate around the Earth, so they are no more distant than approximately 75 millions kilometers. \
+Instead, looking at the overall distribution and minimum distance, the riskful ones are clearly closer to the Earth.
+
+
+```{r, echo = F}
+cor = round(cor(select(data, 1,2,3,4,5)), 2)
+hchart(cor, type = 'heatmap', dataLabels = list(enabled = TRUE), hcaes(value=cor))
+```
+
+
+
+
+From the correlation matrix we can observe that MinDiameter and MaxDiameter have the maximum correlation possible. It's because they explain the same information, and keeping both may be useless for the analysis. \
+This part will be reviewed in the feature engineering.
+
+The AbsoluteMagnitude is negatively correlated with the diameter: it's because the higher is an object, the higher may be its bright and so the lower is the magnitude.
+
+#### Feature Engineering
+
+
+**Incorporation of same variables:** MinDiameter and MaxDiameter represent the same variable (the diameter of the asteroids). Keeping both these variables may cause redundances and unuseful calculations. \
+Given that these two measures are hypothetical, I'm gonna incorporate them into an only variable: HypotheticalDiameter.
+
+```{r, echo = F}
+data$HypotheticalDiameter = (data$MinDiameter + data$MaxDiameter)/2
+data = data[ , -which(names(data) == c('MinDiameter'))]
+data = data[ , -which(names(data) == c('MaxDiameter'))]
+
+#Reordering the columns
+data = select(data, 1,2,3,5,4) 
+```
+
+
+**Standardization of the variables:** some variables are too big, so I need to standardize them in order to increase the efficiency of the algorithms. This step will be done after the data visualization. \
+
+The two main reasons why it's important to standardize these variables are \
+-standardization increases the efficiency of the further algorithms. \
+-the data have different unit of measure
+
+```{r, echo = F}
+data$RelativeVelocity = scale(data$RelativeVelocity)
+data$HypotheticalDiameter = scale(data$HypotheticalDiameter)
+data$MissDistance = scale(data$MissDistance)
+data$AbsoluteMagnitude = scale(data$AbsoluteMagnitude)
+```
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=4) 
+```
+
+### The final Dataset
+```{r, echo = F}
+data_2 = data
+data_2[1:4] = round(data_2[1:4], 3)
+kable(data_2[1:5,])
+```
+
+
+## The Inferential Analysis
+
+The purpose of the analysis is to forecast whether an asteroid is potentially hazardous for our planet or not. 
+
+Before studying the distributions, the division in train and test set is fundamental. I randomly split the dataset into a $80\%$ train-set and $20\%$ test-set.
+
+```{r, echo = F}
+set.seed(123)
+index = sample(c(rep(0,0.8*nrow(data)), rep(1,0.2*nrow(data))))
+train= data[index == 0,]
+test= data[index == 1,]
+```
+
+
+```{r, echo = F, warning = F}
+rnr = data.frame((table(train$Hazardous)/length(train$Hazardous))*100)
+rnr[1] = as.factor(c('No Riskful', 'Riskful'))
+rnr[2] = round(rnr[2], 2)
+
+
+
+hchart(rnr, type = "pie", hcaes(x = paste(Var1,':', Freq, '%'), y = Freq)) %>%
+  hc_chart(options3d = list(enabled = TRUE, beta = 0, alpha = 60)) %>%
+  hc_xAxis(categories = rnr$Var1) %>%
+  hc_plotOptions(pie = list(depth = 70))%>% 
+  hc_add_theme(thm)%>%
+  hc_title(text = "Train-set (80%)")%>% 
+  hc_subtitle(
+    text = "Proportions of asteroids extracted", 
+    style = list(fontWeight = "bold"),
+    align = "center"
+    )
+```
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3) 
+```
+
+```{r, echo = F, warning = F}
+rnr = data.frame((table(test$Hazardous)/length(test$Hazardous))*100)
+rnr[1] = as.factor(c('No Riskful', 'Riskful'))
+rnr[2] = round(rnr[2], 2)
+
+
+
+hchart(rnr, type = "pie", hcaes(x = paste(Var1,':', Freq, '%'), y = Freq)) %>%
+  hc_chart(options3d = list(enabled = TRUE, beta = 0, alpha = 60)) %>%
+  hc_xAxis(categories = rnr$Var1) %>%
+  hc_plotOptions(pie = list(depth = 70))%>% 
+  hc_add_theme(thm)%>%
+  hc_title(text = "Test-set (20%)")%>% 
+  hc_subtitle(
+    text = "Proportions of asteroids extracted", 
+    style = list(fontWeight = "bold"),
+    align = "center"
+    )
+
+```
+
+
+The proportions are approximately the same, so I can proceed with the analysis.
+
+### 1. Probit regression
+The best way to predict the hazard of an asteroid is to apply the binary classification algorithms: the first approach is the implementation of a probit model.\
+The model takes the following form:
+
+$$P(Y=1|X)=\Phi(X^T\beta)$$
+
+Where $P$ denotes the probability and $\Phi$ denotes the cumulative distribution function of the Normal Standard distribution ($N(0,1)$), that is used to model the regression function. Instead, the parameters $\beta$ have to be estimated.
+
+It is possible to motivate the probit model as a latent variable model. Suppose there exists an auxiliary random variable:
+
+$$Y^*=X^T\beta + \epsilon$$
+where $\epsilon \sim N(0,1)$, then $Y$ can be viewed as an indicator for whether the latent variable is positive.
+
+
+
+$$
+\mathrm{Y^*} = \begin{cases}
+    1 & \text{if  } Y^* > t \\ % & is your "\tab"-like command (it's a tab alignment character)
+    0 & \text{otherwise}
+\end{cases}
+$$
+
+
+#### Implementation of the model with RJags
+
+Gibbs sampling of a probit model is possible because regression models typically use normal prior distributions over the weights, and this distribution is conjugate with the normal distribution of the errors (and hence, but not in this case, of the latent variables Y*). The model can be initialized as
+
+$$\beta_i \sim N(0, 0.0001)$$
+
+$$
+Y_i \sim Ber(probit(p_i))
+$$
+
+```{r, echo = F}
+N = length(train$Hazardous)
+#Data for the sampling
+data_sim =  list("y" = as.vector(train$Hazardous), "N" = N,
+                  "x1" = as.vector(train$RelativeVelocity), "x2" = as.vector(train$MissDistance), "x3" = as.vector(train$AbsoluteMagnitude), "x4" = as.vector(train$HypotheticalDiameter))
+
+#Parameters
+params = c('beta0', 'beta1', 'beta2', 'beta3', 'beta4')
+```
+
+```{r}
+N = length(train$Hazardous)
+probit_reg <- function(){
+  # Likelihood
+  for (i in 1:N){
+    y[i] ~ dbern(p[i])
+    probit(p[i]) =  beta0 + beta1*x1[i] + beta2*x2[i] + beta3*x3[i] + beta4*x4[i]
+  }
+  
+  #Prior beta parameters
+  beta0 ~ dnorm(0, 0.0001)
+  beta1 ~ dnorm(0, 0.0001)
+  beta2 ~ dnorm(0, 0.0001)
+  beta3 ~ dnorm(0, 0.0001)
+  beta4 ~ dnorm(0, 0.0001)
+}
+```
+
+
+```{r, results = F, eval = F}
+set.seed(123)
+model1 = jags(data = data_sim,
+             model.file = probit_reg,
+             parameters.to.save = params,            
+             n.chains = 2,
+             n.iter = 10000, 
+             n.burnin = 1000, 
+             n.thin = 10) 
+```
+
+```{r, echo = F}
+mu.vect = c(-2.148, 0.116, -0.234, -1.626, -0.638, 32127.261)
+sd.vect = c(0.043, 0.008, 0.011, 0.052, 0.026, 319.914)
+quantile_25 = c(-2.163, 0.111, -0.241, -1.645, -0.650, 32113.733)
+quantile_50 = c(-2.150, -0.116, -0.234, -1.629, -0.640, 32115.356)
+quantile_75 = c(-2.138, 0.121, -0.227, -1.612, -0.629, 32117.769)
+Rhat = c(1.001, 1.001, 1.004, 1.001, 1.001, 1.000)
+n.eff = c(1800,1800,450,1800,1800, 1800)
+df = data.frame('μ vect'=mu.vect, 'σ vect'=sd.vect, 'Quantile_0.25'=quantile_25, 'Quantile_0.50'=quantile_50, 'Quantile_0.75'=quantile_75, 'R hat'=Rhat, 'N_eff'=n.eff)
+row.names(df) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4', 'Deviance') 
+```
+
+```{r, echo = F}
+kable(df)
+```
+
+DIC = 83328.3
+$p_D$ = 51201.0
+
+The parameters shown in "$\mu.vect$" are the approximation of the real parameters estimated by the MCMC. 
+
+Instead, the "$\sigma.vect$" represents the standard deviation and can be interpreted as **posterior uncertainty** of the parameters: $\beta_3$ has in fact the highest uncertainty, while $\beta_1$ has the lowest.
+
+The parameter $\hat R$ tells me if there is convergence for the parameters: the closer is $\hat R$ to 1, the highest is the plausibility of a convergence.
+
+The DIC (Deviance Information Criterion)  is an asymptotic approximation as the sample size becomes large (it's a generalization of AIC for the frequentist approach). It's represented as
+
+$$DIC = D_{\hat \theta}(y)+2p_D = \hat D_{avg}(y)+p_D= \\ 2\hat D_{avg}(y)-D_{\hat \theta}(y)$$
+Where \
+$D_{\hat\theta}(y)=-2log  f(y,\hat\theta(y))$, \
+$\hat D_{avg}(y) \approx\frac{1}{M}\sum_j -2logf(y|\theta^{(j)})$ \
+and $p_D$ is the effective number of parameters.
+
+The minimum DIC estimates the “best” model in the same spirit as AIC. \
+The DIC is a comparative index, so I will compare it with all the models in order to choose the best one.
+
+
+
+#### Trace-plots
+
+Let's observe now the stationary regions
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+```
+
+
+```{r, echo = F}
+load(file = "workspace2.RData")
+knitr::opts_chunk$set(fig.width=10, fig.height=6) 
+S=ggs(as.mcmc(model1))
+
+mycolors = c('darkorchid4', 'darkorchid', "orange", "orange",
+             "magenta2", "blue")
+color_scheme_set(mycolors)
+
+mcmc_trace(model1$BUGSoutput$sims.array)
+```
+
+The traceplot explains the pattern followed by the parameter for every iteration of the Markov Chains. \
+From the plot we can see that the processes look stationary: it means that the trend of the parameter, with infinite iterations, becomes constant.
+
+
+
+
+
+#### Empirical Average
+
+
+If $I<\infty$ and $\theta_1,...\theta_t$ iid, for the Strong Law of Large Numbers (SLLN), the empirical average is a consistent (sequence of) estimator(s) of $I$, such as 
+$$
+\hat{I}_{t} = \frac{1}{T} \sum_{i=1}^{T} h(\theta_i)\xrightarrow{\text{a.s.}} I
+$$
+So I implement the estimator in the following way and apply it to every parameter.
+
+
+```{r, echo = F, fig.width=9, fig.height=6}
+par(mfrow = c(2,3))
+
+color_scheme_set(mycolors)
+#BETA0
+sum1 = 0
+sum2 = 0
+n = length(model1$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model1$BUGSoutput$sims.array[i,1,1]
+  sum2 = sum2 + model1$BUGSoutput$sims.array[i,2,1]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkorchid4', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[0]) ), ylim = c(-2.2, -1.5), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'magenta2', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+# BETA 1
+sum1 = 0
+sum2 = 0
+n = length(model1$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model1$BUGSoutput$sims.array[i,1,2]
+  sum2 = sum2 + model1$BUGSoutput$sims.array[i,2,2]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkorchid4', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[1]) ), ylim = c(0.1,0.118), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'magenta2', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA2
+
+sum1 = 0
+sum2 = 0
+n = length(model1$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model1$BUGSoutput$sims.array[i,1,3]
+  sum2 = sum2 + model1$BUGSoutput$sims.array[i,2,3]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkorchid4', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[2]) ), ylim = c(-0.24,-0.14), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'magenta2', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA3
+sum1 = 0
+sum2 = 0
+n = length(model1$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model1$BUGSoutput$sims.array[i,1,4]
+  sum2 = sum2 + model1$BUGSoutput$sims.array[i,2,4]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkorchid4', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[3]) ), ylim = c(-1.66,-01), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'magenta2', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+#BETA4
+sum1 = 0
+sum2 = 0
+n = length(model1$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model1$BUGSoutput$sims.array[i,1,5]
+  sum2 = sum2 + model1$BUGSoutput$sims.array[i,2,5]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkorchid4', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[4]) ), ylim = c(-0.71,-0.3), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'magenta2', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+```
+
+
+Each parameter's Empirical Average converge to the same point: it means that, also with different initial points for the two chains, the estimated mean parameter will be approximately the same.
+
+
+
+
+#### Density
+
+From the density plot we can observe the distribution of the estimated parameters. 
+
+The mean of the distribution represents the estimate of the parameters ("$\mu.vect$").
+The higher is the curve on a certain x, the more plausible is that value as parameter. As we can observe, the distributions are mainly concentrated around the estimated parameters, but another way to study the probability of the parameters is with the **Credible Intervals**.
+
+
+
+```{r, echo = F}
+mcmc_dens_overlay(model1$BUGSoutput$sims.array)
+```
+
+
+
+```{r, echo = F}
+#knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+There are two types of credible intervals: Equal-Tail and Highest Posterior Density (HPD).
+
+If the distribution is not unimodal and symmetric there could be points points out of the ET interval having a higher posterior density than some points of the interval. So in this case it's better to study the **Highest Posterior Density interval (HPD)**.
+
+The particularity of the HPD interval is that the posterior density for every point in the confidence region $I_{\alpha}$ is higher than the posterior density for any point outside of this set.
+
+The HPD intervals at level $\alpha = 0.05$ are the following
+
+```{r, echo = F}
+obj = as.mcmc(model1)
+kable(data.frame(HPDinterval(obj, prob = 0.95)[1]))
+```
+
+The intervals effectively contain the values of the estimated parameters.
+
+#### Autocorrelations
+
+The  autocorrelation is the is the Pearson correlation between values of the process at different times, as a function of the two times or of the time lag.
+
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3) 
+```
+
+
+```{r, echo = F, message = F, warning=F}
+par(mfrow = c(1,2))
+acf(model1$BUGSoutput$sims.array[,1,1], col = 'darkorchid4', lwd = 2, main = expression(paste(beta[0], ' - Chain 1')))
+grid()
+acf(model1$BUGSoutput$sims.array[,2,1], col = 'magenta2', lwd = 2, main = expression(paste(beta[0], ' - Chain 2')))
+grid()
+
+acf(model1$BUGSoutput$sims.array[,1,2], col = 'darkorchid4', lwd = 2, main = expression(paste(beta[1], ' - Chain 1')))
+grid()
+acf(model1$BUGSoutput$sims.array[,2,2], col = 'magenta2', lwd = 2, main = expression(paste(beta[1], ' - Chain 2')))
+grid()
+
+acf(model1$BUGSoutput$sims.array[,1,3], col = 'darkorchid4', lwd = 2, main = expression(paste(beta[2], ' - Chain 1')))
+grid()
+acf(model1$BUGSoutput$sims.array[,2,3], col = 'magenta2', lwd = 2, main = expression(paste(beta[2], ' - Chain 2')))
+grid()
+
+acf(model1$BUGSoutput$sims.array[,1,4], col = 'darkorchid4', lwd = 2, main = expression(paste(beta[3], ' - Chain 1')))
+grid()
+acf(model1$BUGSoutput$sims.array[,2,4], col = 'magenta2', lwd = 2, main = expression(paste(beta[3], ' - Chain 2')))
+grid()
+
+acf(model1$BUGSoutput$sims.array[,1,5], col = 'darkorchid4', lwd = 2, main = expression(paste(beta[4], ' - Chain 1')))
+grid()
+acf(model1$BUGSoutput$sims.array[,2,5], col = 'magenta2', lwd = 2, main = expression(paste(beta[4], ' - Chain 2')))
+grid()
+```
+
+```{r, echo = F}
+coda.fit <- as.mcmc(model1)
+#acfplot(coda.fit, xlim = c(5,30), ylim = c(-0.2, 0.3))
+
+kable(data.frame(autocorr.diag(as.mcmc(model1))))
+```
+
+From the ACF plots and the table we observe that, with the augmenting of the iterations (and so of the lag), the autocorrelation decreases until around zero. It means that there is not correlation between different values of the chain. \
+We can observe that the autocorrelation of $\beta_1$ and $\beta_2$ decreases faster than the other parameters.
+
+
+
+#### Correlation between parameters
+
+Above we've seen the plots regarding the behavior of the Markov Chains from different point of view. \
+Furthermore, looking closely to the graphs, we can notice that $\beta_0,\beta_3$ and $\beta4$ follow very similar patterns and have a similar distribution. \
+These aspects may suggest us to look at the correlation between them and to see whether these values are high:
+
+```{r, echo = F}
+hchart(round(cor(model1$BUGSoutput$sims.matrix),2), type = 'heatmap', dataLabels = list(enabled = TRUE), hcaes(value=cor))
+```
+
+As expected, there is high correlation between them!
+
+
+#### Approximation Error
+
+To evaluate the approximation error I use the **MCSE** estimate: the MCSE (Monte Carlo Standard Error) is an estimate of the inaccuracy of Monte Carlo samples, usually regarding the expectation of posterior samples from  Monte Carlo Markov Chain algorithms.
+
+I estimated the MCSE with the $MCSE$ function from LaplacesDemon package obtaining the following results:
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=3, fig.height=6) 
+AE_beta0 = MCSE(model1$BUGSoutput$sims.array[,1,"beta0"])
+AE_beta1 = MCSE(model1$BUGSoutput$sims.array[,1,"beta1"])
+AE_beta2 = MCSE(model1$BUGSoutput$sims.array[,1,"beta2"])
+AE_beta3 = MCSE(model1$BUGSoutput$sims.array[,1,"beta3"])
+AE_beta4 = MCSE(model1$BUGSoutput$sims.array[,1,"beta4"])
+
+ae = data.frame('Approximation_Error' = c(AE_beta0, AE_beta1, AE_beta2, AE_beta3, AE_beta4))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4')
+
+kable(ae)
+```
+
+The highest approximation error is the $\beta_3$'s, and the lowest is the $\beta_1$'s.
+
+#### Predictions
+
+Now that the parameters have been estimated, it's time to do the first forecast on the test set:
+
+```{r}
+#Parameters
+beta0 = model1$BUGSoutput$summary["beta0", "mean"]
+beta1 = model1$BUGSoutput$summary["beta1", "mean"]
+beta2 = model1$BUGSoutput$summary["beta2", "mean"]
+beta3 = model1$BUGSoutput$summary["beta3", "mean"]
+beta4 = model1$BUGSoutput$summary["beta4", "mean"]
+
+x = test[1:4]
+y = test[,5]
+XTb = beta0 + beta1*x[1] + beta2*x[2] + beta3*x[3] + beta4*x[4]
+
+#predictions for a given threshold t
+predictions_t = function(xTb, t){
+  preds = rep(NA, length(XTb[,1]))
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = pnorm(XTb[i, 1])
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+
+
+```
+
+Before selecting the best threshold, it's good to observe the ROC curves for the different thresholds in order to choose the one with the best performance for the problem. \
+
+In fact, the main objective of the task is to discover as most hazardful asteroids as possible increasing the True Positive Rate (TPR/Recall) and Precision, trying to avoid false negatives (decreasing FNR), also at cost to sacrifice some false positives (FPR). \
+
+It's better to know which objects are going to collide with the Earth, than knowing which are not dangerous!
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+
+```{r, echo = F}
+preds1 = predictions_t(xTb, 0.1)
+preds2 = predictions_t(xTb, 0.2)
+preds35 = predictions_t(xTb, 0.35)
+preds5 = predictions_t(xTb, 0.5)
+preds8 = predictions_t(xTb, 0.8)
+```
+
+
+
+
+```{r, echo = F, message = F,warnings = F}
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds2), add = T, col = 'red')
+plot(roc(y ~ preds35), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.2", 't = 0.35', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+The best threshold for this task is $t=0.35$.
+
+In fact it gives us the following values:
+
+- Accuracy: $87.84\%$
+- Precision: $94.18\%$
+- Recall: $92.49\%$
+- AUROC: $61.44\%$
+- F1-Score: $93.33\%$
+
+The confusion matrix for the threshold is the following
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=5, fig.height=5) 
+```
+
+```{r, echo = F}
+
+
+conf_mtx <- data.frame(round(prop.table(table(preds35, y)), digits = 3))
+
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds35, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+```
+
+
+
+
+#### Testing
+
+
+
+**1. Geweke Diagnostic** is based on a test for equality of the means of the first and last part of a Markov Chain (by default the first 10% and the last 50%) .
+
+The null hypothesis in the test is that two parts of the chain come from the same distribution, and to study it it's used a mean difference test. \
+If the two averages are equal it is likely that the chain will converge.
+
+The test statistic is a standard Z-score: the difference between the two sample means divided by its estimated standard error adjusted for autocorrelation.
+
+```{r, echo = F, eval = F}
+geweke.diag(as.mcmc(model1))[[1]]
+```
+
+```{r, echo = F}
+ae = data.frame('Z.score_Chain1' = c(1.377, -1.303, 1.315, 1.325, 1.412, 1.061), 
+                'Z.score_Chain2' = c(0.9585, -1.9106, 0.8069, 0.9575, 1.0057,
+                                     1.0609))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4','deviance')
+kable(ae)
+```
+
+
+
+```{r, echo = F}
+geweke.plot(as.mcmc(model1),col="darkblue")
+```
+
+The plot shows that almost all the Z-scores evaluated are into the acceptance area, so we accept the null hypothesis.
+
+**2. Raftery & Lewis Diagnostic** estimates the number of iterations needed for a given level of precision in posterior samples.
+
+What we want to measure is some posterior quantile of interest q. \
+
+If we define some acceptable tolerance $r$ for $q$ and a probability $s$ of being within that tolerance, the Raftery and Lewis diagnostic will calculate the number of iterations $N = T_{min}$ and the number of burn-ins $M$ necessary to satisfy the specified conditions. \
+
+```{r, eval = F, echo = F}
+raftery.diag(as.mcmc(model1))
+```
+
+The results are: \
+**Quantile** = 0.025 \
+**Accuracy** = +/- 0.005 \
+**Probability of Accuracy** = 0.95
+
+**3746 samples** are needed for the values above.
+
+
+**3. Heidelberger & Welch Diagnostic** is a convergence test that test whether the sampled values come from a stationary distribution.
+
+It's applied firstly to the whole chain, then discards $10\%$ of the chain until the null hypothesis is discarded. If  the $50\%$ is discarded, we reject the null hypothesis.
+
+```{r, echo  = F}
+ae = data.frame('Stationarity_test_chain1' = c(rep('passed', 6)), 
+                'Start_iteration_chain1' = c(91, 1, 1, 91, 91, 1),
+                'p.value_chain1' = c(0.454, 0.733, 0.203, 0.233, 0.207, 0.577),
+                'Stationarity_test_chain2' = c(rep('passed', 6)),
+                'Start_test_chain2' = c(91,1,1,181,91,1),
+                'p.value_chain2' = c(0.1845,0.1113, 0.3172, 0.0939,0.8046, 0.6052))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4','deviance')
+kable(ae)
+```
+
+
+
+```{r, echo = F}
+#heidel.diag(as.mcmc(model1))
+
+ae = data.frame('Halfwidth_test_chain1' = c(rep('passed', 6)), 
+                'Mean_chain1' = c(-2.167, 0.117, -0.235, -1.672, -0.682, 32252.650),
+                'Halfwidth_chain1' = c(2.68e-03, 4.94e-04, 7.69e-04, 3.61e-03, 1.98e-03, 2.10e+01),
+                'Halfwidth_test_chain2' = c(rep('passed', 6)),
+                'Mean_chain2' = c(-2.169,0.117,-0.236,-1.675,-0.684,32252.524),
+                'Halfwidth_chain2' = c(2.78e-03 ,4.96e-04, 8.05e-04 , 3.71e-03 ,1.94e-03 , 2.10e+01))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4','deviance')
+kable(ae)
+```
+
+Every test has been passed succesfully.
+
+
+#### Comparison with the Frequentist approach
+
+After observing the behaviour and the goodness of the parameters, it's time to compare the obtained model with the estimated parameters of the frequentist approach. \
+In order to do that I decide to use the $glm$ package from R.
+
+```{r, echo = F}
+train$Hazardous = as.numeric(train$Hazardous)
+```
+
+```{r, results = F, warning = F}
+freq_probit = glm(Hazardous ~ HypotheticalDiameter + RelativeVelocity + MissDistance + AbsoluteMagnitude, family = binomial(link = "probit"),data=train)
+```
+
+AIC = 32250
+
+The estimated parameters are pretty close to the parameters studied in the Bayesian approach.
+
+In order to compare the models, I use the same techniques used above (ROC curve + evaluation of the indices from the confusion matrix)
+
+
+
+```{r, echo = F}
+test$Hazardous = as.numeric(test$Hazardous)
+preds = predict(freq_probit, test)
+y = test$Hazardous
+
+
+predictions_t = function(xTb, t){
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = pnorm(xTb[i])
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+```
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+```{r, message = F, warnings = F, echo = F}
+preds1 = predictions_t(preds, 0.1)
+preds25 = predictions_t(preds, 0.25)
+preds35 = predictions_t(preds, 0.35)
+preds5 = predictions_t(preds, 0.5)
+preds8 = predictions_t(preds, 0.8)
+
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds25), add = T, col = 'red')
+plot(roc(y ~ preds35), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.25", 't = 0.35', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+The best threshold is $t=0.2$ that gives me the following results:\
+
+- Accuracy: $87.57\%$
+- Precision: $93.50\%$
+- Recall: $92.79\%$
+- AUROC: $62.86\%$
+- F1-Score: $93.14\%$
+
+The confusion matrix for the threshold is the following
+
+
+```{r, echo = F}
+conf_mtx <- data.frame(round(prop.table(table(preds25, y)), digits = 3))
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds25, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+```
+
+
+### 2. Logistic Regression (Logit)
+
+
+Another way to estimate binary outputs is the Logistic Regression with the logit link function. The assumptions are the following:
+
+$$Y_i \sim Ber(logit(p_i))$$
+$$logit(p_i)=log\bigg(\frac{p_i}{1-p_i}\bigg)=\beta_0 + \beta_1x_{1_i} + \beta_2x_{2_i}+\beta_3x_{3_i} + \beta_4x_{4_i}$$
+
+Also in this case the prior parameters $\beta$ will have a prior distribution with $\mu = 0$ and $\sigma = 0.0001$
+
+$$\beta_i\sim N(0,0.0001)$$
+
+for $i=1,2,3,4$.
+
+#### Implementation of the model with RJags
+
+As done before, the model is implemented with RJags
+
+
+```{r}
+N = length(train$Hazardous)
+log_reg <- function(){
+  # Likelihood
+  for (i in 1:N){
+    y[i] ~ dbern(p[i])
+    logit(p[i]) =  beta0 + beta1*x1[i] + beta2*x2[i] + beta3*x3[i] + beta4*x4[i]
+  }
+  
+  #Prior beta parameters
+  beta0 ~ dnorm(0, 0.0001)
+  beta1 ~ dnorm(0, 0.0001)
+  beta2 ~ dnorm(0, 0.0001)
+  beta3 ~ dnorm(0, 0.0001)
+  beta4 ~ dnorm(0, 0.0001)
+}
+```
+
+
+```{r, echo = F, eval = F}
+#Data for the sampling
+data_sim =  list("y" = as.vector(train$Hazardous), "N" = N,
+                  "x1" = as.vector(train$RelativeVelocity), "x2" = as.vector(train$MissDistance), "x3" = as.vector(train$AbsoluteMagnitude), "x4" = as.vector(train$HypotheticalDiameter))
+
+#Parameters
+params = c('beta0', 'beta1', 'beta2', 'beta3', 'beta4')
+```
+
+
+```{r, results = F, eval = F}
+set.seed(123)
+model2 = jags(data = data_sim,
+             model.file = log_reg,
+             parameters.to.save = params,            
+             n.chains = 2,
+             n.iter = 10000, 
+             n.burnin = 1000, 
+             n.thin = 10) 
+```
+
+
+
+
+
+```{r, echo = F}
+mu.vect = c(-3.980, 0.198, -0.455, -3.315, -1.528, 32486.199)
+sd.vect = c(0.102, 0.013, 0.021, 0.123, 0.073, 414.230)
+quantile_25 = c(-4.012, 0.189, -0.467, -3.356, -1.560, 32468.279)
+quantile_50 = c(-3.984, -0.199, -0.456, -3.321, -1.531, 32469.978)
+quantile_75 = c(-3.959, 0.208, -0.444, -3.287, -1.503, 32472.291)
+Rhat = c(1.000, 1.002, 1.001, 1.000, 1.001, 1.000)
+n.eff = c(1800,1800,1800,1800,1800, 1800)
+df = data.frame('μ vect'=mu.vect, 'σ vect'=sd.vect, 'Quantile_0.25'=quantile_25, 'Quantile_0.50'=quantile_50, 'Quantile_0.75'=quantile_75, 'R hat'=Rhat, 'N_eff'=n.eff)
+row.names(df) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4', 'Deviance') 
+```
+
+```{r, echo = F}
+kable(df)
+#pD = 85614.2, 
+```
+
+DIC = 118166.2
+
+Also in this case there is convergence for the parameters, but they are higher in module than the probit ones. \
+$\beta_3$ and $\beta_0$ have the highest posterior uncertainty.
+
+
+
+#### Trace-plot
+
+The behavior of the parameters in the simulation is pretty similar to the probit's behavior, the only difference is in the mean of the parameters (and so the "line where they turn around").
+
+```{r, echo = F}
+#knitr::opts_chunk$set(fig.width=8, fig.height=12) 
+```
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+```
+
+```{r, echo = F}
+
+S=ggs(as.mcmc(model2))
+
+mycolors = c('darkblue', 'darkorchid', "orange", "orange",
+             "dodgerblue", "blue")
+color_scheme_set(mycolors)
+mcmc_trace(model2$BUGSoutput$sims.array[,,1:5])
+```
+
+Anyway, all the processes look stationary.
+
+#### Empirical Average
+
+The empirical averages follow a pattern very similar to the parameters of the probit, wit the difference that $\beta_1$ has a cleaner behavior and converges faster to I. 
+
+```{r, echo = F, fig.width=10, fig.height=6}
+par(mfrow = c(2,3))
+
+#BETA0
+sum1 = 0
+sum2 = 0
+n = length(model2$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model2$BUGSoutput$sims.array[i,1,1]
+  sum2 = sum2 + model2$BUGSoutput$sims.array[i,2,1]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkblue', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[0]) ), ylim = c(-4.01, -3.4), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'dodgerblue', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+# BETA 1
+sum1 = 0
+sum2 = 0
+n = length(model2$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model2$BUGSoutput$sims.array[i,1,2]
+  sum2 = sum2 + model2$BUGSoutput$sims.array[i,2,2]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkblue', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[1]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'dodgerblue', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA2
+
+sum1 = 0
+sum2 = 0
+n = length(model2$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model2$BUGSoutput$sims.array[i,1,3]
+  sum2 = sum2 + model2$BUGSoutput$sims.array[i,2,3]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkblue', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[2]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'dodgerblue', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA3
+sum1 = 0
+sum2 = 0
+n = length(model2$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model2$BUGSoutput$sims.array[i,1,4]
+  sum2 = sum2 + model2$BUGSoutput$sims.array[i,2,4]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkblue', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[3]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'dodgerblue', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+#BETA4
+sum1 = 0
+sum2 = 0
+n = length(model2$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model2$BUGSoutput$sims.array[i,1,5]
+  sum2 = sum2 + model2$BUGSoutput$sims.array[i,2,5]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkblue', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[4]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'dodgerblue', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+```
+
+Any par
+#### Density
+
+```{r, echo = F}
+mcmc_dens_overlay(model2$BUGSoutput$sims.array[,,1:5])
+```
+
+For the same reason as before, I prefer to use the HPD interval instead of EQ.
+
+```{r, echo = F}
+obj = as.mcmc(model2)
+kable(data.frame(HPDinterval(obj, prob = 0.95)[1]))
+```
+
+
+
+#### Autocorrelations
+
+There is a difference between the probit parameters and the logit ones: $\beta_0, \beta_3$ and $\beta_4$ have a slower convergence and an higher autocorrelation.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3)
+```
+
+```{r, echo = F, message = F, warning=F}
+par(mfrow = c(1,2))
+acf(model2$BUGSoutput$sims.array[,1,1], col = 'darkblue', lwd = 2, main = expression(paste(beta[0], ' - Chain 1')))
+grid()
+acf(model2$BUGSoutput$sims.array[,2,1], col = 'dodgerblue', lwd = 2, main = expression(paste(beta[0], ' - Chain 2')))
+grid()
+
+acf(model2$BUGSoutput$sims.array[,1,2], col = 'darkblue', lwd = 2, main = expression(paste(beta[1], ' - Chain 1')))
+grid()
+acf(model2$BUGSoutput$sims.array[,2,2], col = 'dodgerblue', lwd = 2, main = expression(paste(beta[1], ' - Chain 2')))
+grid()
+
+acf(model2$BUGSoutput$sims.array[,1,3], col = 'darkblue', lwd = 2, main = expression(paste(beta[2], ' - Chain 1')))
+grid()
+acf(model2$BUGSoutput$sims.array[,2,3], col = 'dodgerblue', lwd = 2, main = expression(paste(beta[2], ' - Chain 2')))
+grid()
+
+acf(model2$BUGSoutput$sims.array[,1,4], col = 'darkblue', lwd = 2, main = expression(paste(beta[3], ' - Chain 1')))
+grid()
+acf(model2$BUGSoutput$sims.array[,2,4], col = 'dodgerblue', lwd = 2, main = expression(paste(beta[3], ' - Chain 2')))
+grid()
+
+acf(model2$BUGSoutput$sims.array[,1,5], col = 'darkblue', lwd = 2, main = expression(paste(beta[4], ' - Chain 1')))
+grid()
+acf(model2$BUGSoutput$sims.array[,2,5], col = 'dodgerblue', lwd = 2, main = expression(paste(beta[4], ' - Chain 2')))
+grid()
+```
+
+```{r, echo = F}
+coda.fit <- as.mcmc(model2)
+#acfplot(coda.fit, xlim = c(5,30), ylim = c(-0.2, 0.3))
+
+kable(data.frame(autocorr.diag(as.mcmc(model2))))
+```
+
+
+#### Correlation between parameters
+
+The correlation of $\beta_0$ and $\beta_3$ with the other parameters is higher than the $\beta_0$ and $\beta_3$ of the probit.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3) 
+```
+
+```{r, echo = F}
+hchart(round(cor(model2$BUGSoutput$sims.matrix),2), type = 'heatmap', dataLabels = list(enabled = TRUE), hcaes(value=cor))
+```
+
+#### Approximation Error
+
+The MCSEs for the logistic regression are the following.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=3, fig.height=6) 
+AE_beta0 = MCSE(model2$BUGSoutput$sims.array[,1,"beta0"])
+AE_beta1 = MCSE(model2$BUGSoutput$sims.array[,1,"beta1"])
+AE_beta2 = MCSE(model2$BUGSoutput$sims.array[,1,"beta2"])
+AE_beta3 = MCSE(model2$BUGSoutput$sims.array[,1,"beta3"])
+AE_beta4 = MCSE(model2$BUGSoutput$sims.array[,1,"beta4"])
+
+ae = data.frame('Approximation_Error' = c(AE_beta0, AE_beta1, AE_beta2, AE_beta3, AE_beta4))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4')
+
+kable(ae)
+```
+
+The comparison of MCSEs is important because we can measure the reliability of the parameters of the different model. In this case, the parameters $\beta_0,\beta_1$ and $\beta_2$ are better in the probit model, while $\beta_3$ and $\beta_4$ are better in the logistic regression.
+
+#### Predictions
+
+Now it's time to evaluate the model from the point of view of the forecasting.
+
+```{r}
+#Parameters
+beta0 = model2$BUGSoutput$summary["beta0", "mean"]
+beta1 = model2$BUGSoutput$summary["beta1", "mean"]
+beta2 = model2$BUGSoutput$summary["beta2", "mean"]
+beta3 = model2$BUGSoutput$summary["beta3", "mean"]
+beta4 = model2$BUGSoutput$summary["beta4", "mean"]
+
+x = (test[1:4])
+y = test[,5]
+#eta
+XTb = beta0 + beta1*x[1] + beta2*x[2] + beta3*x[3] + beta4*x[4] 
+
+preds = rep(NA, length(XTb[,1]))
+
+predictions_t = function(xTb, t){
+  #preds = rep(NA, length(XTb[,1]))
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = 1/(1+exp(-xTb[i,1]))
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+```
+
+
+By looking at the ROC curves we can now choose the best model for the task:
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+```{r, warning=F, message=F, echo = F}
+preds1 = predictions_t(XTb, 0.1)
+preds25 = predictions_t(XTb, 0.25)
+preds35 = predictions_t(XTb, 0.35)
+preds5 = predictions_t(XTb, 0.5)
+preds8 = predictions_t(XTb, 0.8)
+
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds25), add = T, col = 'red')
+plot(roc(y ~ preds35), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.25", 't = 0.35', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+
+The best threshold for this task is $t=0.25$.
+
+In fact it gives us the following values:
+
+- Accuracy: $84.78\%$
+- Precision: $88.18\%$
+- Recall: $94.59\%$
+- AUROC: $70.58\%$
+- F1-Score: $91.27\%$
+
+```{r, echo = F, warning = F, message=F}
+conf_mtx <- data.frame(round(prop.table(table(preds25, y)), digits = 3))
+
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds25, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+
+```
+
+
+#### Comparison with the frequentist approach
+
+```{r, warning = F, results = F}
+freq_logit = glm(Hazardous ~ HypotheticalDiameter + RelativeVelocity + MissDistance + AbsoluteMagnitude, family = binomial(link = "logit"),data=train)
+```
+
+AIC = 32500
+
+
+```{r, echo = F}
+test$Hazardous = as.numeric(test$Hazardous)
+preds = predict(freq_logit, test)
+y = test$Hazardous
+
+
+
+
+predictions_t = function(xTb, t){
+  #preds = rep(NA, length(XTb[,1]))
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = 1/(1+exp(-xTb[i]))
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+```
+
+
+```{r, message = F, warnings = F, echo = F}
+preds1 = predictions_t(preds, 0.1)
+preds25 = predictions_t(preds, 0.25)
+preds35 = predictions_t(preds, 0.35)
+preds5 = predictions_t(preds, 0.5)
+preds8 = predictions_t(preds, 0.8)
+
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds25), add = T, col = 'red')
+plot(roc(y ~ preds35), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.25", 't = 0.35', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+Also in this case the best threshold is $t=0.25$, giving the following values:
+
+
+- Accuracy: $86.25\%$
+- Precision: $91.06\%$
+- Recall: $93.53\%$
+- AUROC: $66.19\%$
+- F1-Score: $92.28\%$
+
+
+```{r, echo = F}
+conf_mtx <- data.frame(round(prop.table(table(preds25, y)), digits = 3))
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds25, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+```
+
+
+
+
+### 3. Complementary log-log regression 
+
+Unlike logit and probit, the complementary log-log (cloglog) model is asymmetrical and it is frequently used when the probability of an event is very small or very large. 
+
+The assumptions in this case are
+
+$$
+Y_i \sim Ber(cloglog(p_i))
+$$
+
+
+$$
+cloglog(p_i) = log(−log(1−p_i)) = \beta_0 + \beta_1x_1 + \beta_2x_2 +\beta_3x_3 +\beta_4 x_4
+$$
+
+And the assumption for the prior distribution of $\beta$ is 
+
+$$
+\beta_i \sim N(0,0.0001)
+$$
+
+for $i=1,2,3,4$
+
+
+#### Implementation of the model with RJags
+
+```{r}
+N = length(data$Hazardous)
+cloglog <- function(){
+  # Likelihood
+  for (i in 1:N){
+    y[i] ~ dbern(p[i])
+    cloglog(p[i]) <-  beta0 + beta1*x1[i] + beta2*x2[i] + beta3*x3[i] + beta4*x4[i]
+  }
+  
+  beta0 ~ dnorm(0, 0.0001)
+  beta1 ~ dnorm(0, 0.0001)
+  beta2 ~ dnorm(0, 0.0001)
+  beta3 ~ dnorm(0, 0.0001)
+  beta4 ~ dnorm(0, 0.0001)
+  
+}
+```
+
+```{r, eval = F, results = F}
+set.seed(123)
+model3 = jags(data = data_sim,
+              model.file = cloglog,
+              parameters.to.save = params,            
+              n.chains = 2,
+              n.iter = 10000, 
+              n.burnin = 1000, 
+              n.thin = 10) 
+```
+
+
+
+```{r, echo = F}
+load(file = "workspace3.RData")
+mu.vect = c(-3.920, 0.158, -0.404, -3.090, -1.540, 32693.754)
+sd.vect = c(0.036, 0.011, 0.015, 0.046, 0.038, 3.075)
+quantile_25 = c(-3.943, 0.150, -0.414, -3.120, -1.565, 32691.502)
+quantile_50 = c(-3.920, -0.158, -0.405, -3.090, -1.540, 32693.086)
+quantile_75 = c(-3.896, 0.165, -0.395, -3.059, -1.515, 32695.484)
+Rhat = c(1.000, 1.002, 1.002, 1.001, 1.001, 1.000)
+n.eff = c(1800,810,1800,1800,1800, 1)
+df = data.frame('μ vect'=mu.vect, 'σ vect'=sd.vect, 'Quantile_0.25'=quantile_25, 'Quantile_0.50'=quantile_50, 'Quantile_0.75'=quantile_75, 'R hat'=Rhat, 'N_eff'=n.eff)
+row.names(df) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4', 'Deviance') 
+kable(df)
+```
+
+DIC = 32698.5
+
+As far as posterior uncertainty is concerned, it is pretty similar to the previous ones, but the interesting behavior of this chain regards the diagnostics:
+
+
+
+#### Trace-plot
+
+
+From the plots the chains looks stationary.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=12) 
+```
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+```
+
+```{r, echo = F}
+
+S=ggs(as.mcmc(model3))
+
+mycolors = c('darkgreen', 'darkorchid', "orange", "orange",
+             "springgreen", "blue")
+color_scheme_set(mycolors)
+mcmc_trace(model3$BUGSoutput$sims.array[,,1:5])
+```
+
+
+#### Empirical Average
+
+The moving-mean plots are less smooth than the previous, in fact the convergence arrives lately, especially for the second chain (the dark-green chain).
+
+```{r, echo = F, fig.width=10, fig.height=6}
+par(mfrow = c(2,3))
+
+#BETA0
+sum1 = 0
+sum2 = 0
+n = length(model3$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model3$BUGSoutput$sims.array[i,1,1]
+  sum2 = sum2 + model3$BUGSoutput$sims.array[i,2,1]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkgreen', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[0]) ), ylim = c(-4.01, -3.4), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'springgreen', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+# BETA 1
+sum1 = 0
+sum2 = 0
+n = length(model3$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model3$BUGSoutput$sims.array[i,1,2]
+  sum2 = sum2 + model3$BUGSoutput$sims.array[i,2,2]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkgreen', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[1]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'springgreen', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA2
+
+sum1 = 0
+sum2 = 0
+n = length(model3$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+
+for(i in 1:n){
+  sum1 = sum1 + model3$BUGSoutput$sims.array[i,1,3]
+  sum2 = sum2 + model3$BUGSoutput$sims.array[i,2,3]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkgreen', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[2]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'springgreen', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+
+#BETA3
+sum1 = 0
+sum2 = 0
+n = length(model3$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model3$BUGSoutput$sims.array[i,1,4]
+  sum2 = sum2 + model3$BUGSoutput$sims.array[i,2,4]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkgreen', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[3]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'springgreen', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+#BETA4
+sum1 = 0
+sum2 = 0
+n = length(model3$BUGSoutput$sims.array[,1,2])
+I_t1 = rep(NA, n)
+I_t2 = rep(NA, n)
+
+#beta0
+for(i in 1:n){
+  sum1 = sum1 + model3$BUGSoutput$sims.array[i,1,5]
+  sum2 = sum2 + model3$BUGSoutput$sims.array[i,2,5]
+  I_t1[i] = sum1/i
+  I_t2[i] = sum2/i
+}
+
+plot(I_t1, type = 'l', col = 'darkgreen', xlab = 't', ylab = expression(beta), main = expression(paste('Empirical Average over t iterations for ', beta[4]) ), xlim = c(0,900), lwd = 1.5, axes = F)
+lines(I_t2, col = 'springgreen', lwd = 1.5)
+
+axis(1)
+axis(2)
+
+grid()
+
+```
+
+
+#### Density
+
+Even if the distribution may look a little bit symmetrical, it's not
+```{r, echo = F}
+mcmc_dens_overlay(model3$BUGSoutput$sims.array[,,1:5])
+```
+
+So I evaluate the HPD intervals as done before
+
+```{r, echo = F}
+obj = as.mcmc(model3)
+kable(data.frame(HPDinterval(obj, prob = 0.95)[1]))
+```
+
+#### Autocorrelations
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3)
+```
+
+
+```{r, echo = F, message = F, warning=F}
+par(mfrow = c(1,2))
+acf(model3$BUGSoutput$sims.array[,1,1], col = 'darkgreen', lwd = 2, main = expression(paste(beta[0], ' - Chain 1')))
+grid()
+acf(model3$BUGSoutput$sims.array[,2,1], col = 'springgreen', lwd = 2, main = expression(paste(beta[0], ' - Chain 2')))
+grid()
+
+acf(model3$BUGSoutput$sims.array[,1,2], col = 'darkgreen', lwd = 2, main = expression(paste(beta[1], ' - Chain 1')))
+grid()
+acf(model3$BUGSoutput$sims.array[,2,2], col = 'springgreen', lwd = 2, main = expression(paste(beta[1], ' - Chain 2')))
+grid()
+
+acf(model3$BUGSoutput$sims.array[,1,3], col = 'darkgreen', lwd = 2, main = expression(paste(beta[2], ' - Chain 1')))
+grid()
+acf(model3$BUGSoutput$sims.array[,2,3], col = 'springgreen', lwd = 2, main = expression(paste(beta[2], ' - Chain 2')))
+grid()
+
+acf(model3$BUGSoutput$sims.array[,1,4], col = 'darkgreen', lwd = 2, main = expression(paste(beta[3], ' - Chain 1')))
+grid()
+acf(model3$BUGSoutput$sims.array[,2,4], col = 'springgreen', lwd = 2, main = expression(paste(beta[3], ' - Chain 2')))
+grid()
+
+acf(model3$BUGSoutput$sims.array[,1,5], col = 'darkgreen', lwd = 2, main = expression(paste(beta[4], ' - Chain 1')))
+grid()
+acf(model3$BUGSoutput$sims.array[,2,5], col = 'springgreen', lwd = 2, main = expression(paste(beta[4], ' - Chain 2')))
+grid()
+```
+
+
+
+```{r, fig.align="center", fig.width=10, fig.height=8, echo = F}
+coda.fit <- as.mcmc(model3)
+#acfplot(coda.fit, xlim = c(5,30), ylim = c(-0.2, 0.3))
+
+kable(data.frame(autocorr.diag(as.mcmc(model3))))
+```
+The autocorrelation plots are pretty similar to the logit plots: there is so similar correlation between values of the chains at different states.
+
+#### Correlation between parameters
+
+In this case the parameters are less correlated: in fact $\beta_0$ is less correlated with $\beta_2$ and the deviance. The overall correlation is lower than the previous for every parameter.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=8, fig.height=3) 
+```
+
+
+```{r, echo = F}
+hchart(round(cor(model3$BUGSoutput$sims.matrix),2), type = 'heatmap', dataLabels = list(enabled = TRUE), hcaes(value=cor))
+```
+
+
+#### Approximation Error
+
+In this case the MCSEs are higher than the probit ones, but lower than some AE of the logit.
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=3, fig.height=6) 
+AE_beta0 = MCSE(model3$BUGSoutput$sims.array[,1,"beta0"])
+AE_beta1 = MCSE(model3$BUGSoutput$sims.array[,1,"beta1"])
+AE_beta2 = MCSE(model3$BUGSoutput$sims.array[,1,"beta2"])
+AE_beta3 = MCSE(model3$BUGSoutput$sims.array[,1,"beta3"])
+AE_beta4 = MCSE(model3$BUGSoutput$sims.array[,1,"beta4"])
+
+ae = data.frame('Approximation_Error' = c(AE_beta0, AE_beta1, AE_beta2, AE_beta3, AE_beta4))
+row.names(ae) = c('β_0', 'β_1', 'β_2', 'β_3', 'β_4')
+
+kable(ae)
+```
+
+$\beta_0$ has the biggest approximation error and $\beta_1$ has the lowest.
+
+#### Predictions
+
+```{r, echo = F}
+#Parameters
+beta0 = model3$BUGSoutput$summary["beta0", "mean"]
+beta1 = model3$BUGSoutput$summary["beta1", "mean"]
+beta2 = model3$BUGSoutput$summary["beta2", "mean"]
+beta3 = model3$BUGSoutput$summary["beta3", "mean"]
+beta4 = model3$BUGSoutput$summary["beta4", "mean"]
+
+x = test[1:4]
+y = test[,5]
+```
+
+
+```{r}
+preds = rep(NA, length(XTb[,1]))
+XTb = beta0 + beta1*x[1] + beta2*x[2] + beta3*x[3] + beta4*x[4]
+
+
+
+predictions_t = function(xTb, t){
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = 1-exp(-exp(xTb[i,1]))
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+
+```
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+```{r, message = F, warnings = F, echo = F}
+preds1 = predictions_t(XTb, 0.1)
+preds25 = predictions_t(XTb, 0.25)
+preds3 = predictions_t(XTb, 0.3)
+preds5 = predictions_t(XTb, 0.5)
+preds8 = predictions_t(XTb, 0.8)
+
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds25), add = T, col = 'red')
+plot(roc(y ~ preds3), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.25", 't = 0.3', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+For the best threshold $t=0.3$, the values obtained are
+
+
+- Accuracy: $85.16\%$
+- Precision: $88.99\%$
+- Recall: $94.24\%$
+- AUROC: $69.17\%$
+- F1-Score: $91.54\%$
+
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=6, fig.height=6) 
+```
+
+
+```{r, echo = F}
+
+
+
+conf_mtx <- data.frame(round(prop.table(table(preds3, y)), digits = 3))
+
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds3, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+
+```
+
+
+```{r, eval = F, echo = F}
+Accuracy(preds,y)
+Precision(preds,y)
+Recall(preds,y)
+AUC(preds,y)
+F1_Score(preds,y)
+```
+
+
+
+
+
+#### Comparison with frequentist approach
+
+The final comparison is with the frequentist cloglog regression.
+
+```{r, warning = F, results = F}
+train$Hazardous = as.numeric(train$Hazardous)
+freq_cloglog = glm(Hazardous ~ HypotheticalDiameter + RelativeVelocity + MissDistance + AbsoluteMagnitude, family = binomial(link = "cloglog"),data=train)
+
+```
+
+
+AIC = 32700
+
+
+
+
+```{r, echo = F, warning = F}
+test$Hazardous = as.numeric(test$Hazardous)
+preds = predict(freq_cloglog, test)
+y = test$Hazardous
+
+
+predictions_t = function(xTb, t){
+  predictions = rep(NA, length(XTb[,1]))
+  for(i in 1:length(XTb[,1])){
+    preds[i] = 1-exp(-exp(xTb[i]))
+  }
+  for(i in 1:length(XTb[,1])){
+    if(preds[i]>t)
+      predictions[i] = 1
+    else
+      predictions[i] = 0
+  }
+  return(predictions)
+}
+```
+
+```{r, message = F, warnings = F, echo = F}
+preds1 = predictions_t(preds, 0.1)
+preds25 = predictions_t(preds, 0.25)
+preds3 = predictions_t(preds, 0.3)
+preds5 = predictions_t(preds, 0.5)
+preds8 = predictions_t(preds, 0.8)
+
+plot(roc(y ~ preds1), xaxt = 'n', main = 'ROC curves')
+plot(roc(y ~ preds25), add = T, col = 'red')
+plot(roc(y ~ preds3), add = T, col = 'green')
+plot(roc(y ~ preds5), add = T, col = 'orange')
+legend(0.2, 0.2, legend=c("t = 0.1", "t = 0.25", 't = 0.35', 't = 0.5'),
+       col=c("black", "red", 'green', 'orange'), lty=1, cex=0.8)
+grid()
+```
+
+For the threshold $t=0.3$ we have:
+
+
+- Accuracy: $86.85\%$
+- Precision: $92.10\%$
+- Recall: $93.25\%$
+- AUROC: $64.95\%$
+- F1-Score: $92.67\%$
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width=5, fig.height=5) 
+```
+
+```{r, echo = F}
+conf_mtx <- data.frame(round(prop.table(table(preds3, y)), digits = 3))
+hchart(conf_mtx, type = "heatmap", hcaes(x = preds3, y = y, value = Freq)) %>%
+  hc_title(text = "The Confusion Matrix") %>%
+  hc_plotOptions(
+             series = list(
+                borderColor = "#fcfbfa",
+                borderWidth = 1,
+                animation=(durtion=1000),
+                dataLabels = list(enabled = TRUE)
+  )) %>%
+      hc_xAxis(title=list(text="Actual Values"))  %>%
+         hc_yAxis(title=list(text="Predicted Values") )
+```
+
+
+
+
+
+
+
+
+# The best model
+
+It's time to choose the best model among the six analyzed. The most important thing to know from this analysis is whether an asteroid is potentially harmful for our planet. \
+In order to complete this task, the best model for this analysis is the one with highest **precision** (the percentage of true positives over the predicted positives) and the highest **recall** (the percentage of true positives over all the effectively positives). \
+It's better to discover as most true positives as possible, sacrificing some false positives, than not notice that some asteroids are very dangerous!
+
+Thanks to the frequentist approach, I discovered that every parameter is very significant (***) for the model.
+
+Now let's look at the models with the optimal thresholds in order to choose the best one for this problem
+
+```{r, echo = F, warning=F, message=F}
+
+finale = data.frame('BestThreshold' = c(0.35, 0.25, 0.25, 0.25, 0.3, 0.3),
+                    'Accuracy' = c(0.878, 0.875, 0.847, 0.862, 0.851, 0.868),
+                    'Precision' = c(0.941, 0.935, 0.881, 0.910, 0.889, 0.921),
+                    'Recall' = c(0.924, 0.927, 0.945, 0.935, 0.942, 0.932),
+                    'AUROC' = c(0.614, 0.628, 0.705, 0.661, 0.691, 0.649),
+                    'F1_score' =c(0.933, 0.931, 0.912, 0.922, 0.915, 0.926),
+                    row.names = c('Probit Bayesian', 'Probit Frequentist', 
+                                  'Logit Bayesian', 'Logit Frequentist',
+                                  'Cloglog Bayesian', 'Cloglog Frequentist'))
+library(kableExtra)
+kable(finale)%>%
+  row_spec(1, bold = T, color = "white", background = "limegreen")%>%
+  kable_paper(full_width = F)
+```
+
+Given the optimal thresholds for our problem, the best model for the prediction is the **Bayesian Probit model**. \
+In fact this model guarantees high performance in detecting true positives, avoiding false negatives. The model has the highest overall Accuracy and Precision, so it's the best one.
+
+
+
+
+```{r echo = F, warning=F, message=F}
+
+dics = data.frame('Bayesian_DIC' = c(83328.3, 118166.2, 32698.5),
+                  'Frequentist_AIC' = c(32250, 32500, 32700),
+                  row.names = c('Probit', 'Logit', 'Cloglog'))
+kable(dics)%>%
+  kable_paper(full_width = F)
+```
+
+
+DIC and AIC are information criteria. The lower is the Criteria, the best could be the model. \
+In this case the best Bayesian model would be the Cloglog, and the best frequentist would be the Probit. \
+
+Even if these Information Criteria suggest to chose a different model, my predictions suggest to chose the Bayesian Probit model to study this problem.
+
+# Conclusions
+
+In conclusion, all the models have fitted well with the data. \
+The models differ very slightly, but for this kind of analysis the best model is the probit one.
+
+# References
+
+NASA - Nearest Object: https://www.kaggle.com/datasets/sameepvani/nasa-nearest-earth-objects
+
+Gibbs Sampling for the Probit Regression Model: https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.154.268&rep=rep1&type=pdf
