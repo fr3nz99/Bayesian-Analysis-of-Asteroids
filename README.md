@@ -9,9 +9,9 @@ In order to do that, we have different Machine Learning algorithms at our dispos
 The dataset analyzed for this analysis is taken from Kaggle and contains more than 90’000 features regarding 27’000 objects in the space.
 
 Three statistical models for classification are applied: 
--Probit Regression \
--Logistic Regression (with Logit link function) \
--Complementary log-log regression (cloglog) \
+-Probit Regression 
+-Logistic Regression (with Logit link function) 
+-Complementary log-log regression (cloglog) 
 The parameters of the models are tuned with Monte Carlo Markov Chain methods, and a fully bayesian in-depth analysis is applied to them. The analysis is divided in 4 parts:
 1. Exploratory Data Analysis and Feature Engineering
 2. Application of three different statistical models for binomial classification: Probit Regression, Logistic Regression (Logit) and Complementary
