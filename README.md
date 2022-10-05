@@ -1,4 +1,4 @@
-# Bayesian-Analysis-of-Asteroids
+# Bayesian Analysis of the Danger of Asteroids
 
 ### Project for Bayesian Statistics course - AY 2021/2022
 
