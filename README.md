@@ -1,4 +1,5 @@
 # Bayesian Analysis of the Danger of Asteroids
+## Francesco Pinto
 
 ### Project for Bayesian Statistics course - AY 2021/2022
 
